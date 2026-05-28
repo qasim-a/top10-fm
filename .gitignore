@@ -21,4 +21,4 @@ samconfig.toml
 
 # general
 .DS_Store
-*.log
+*.logbackend/output_*.json
