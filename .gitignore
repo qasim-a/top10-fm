@@ -1,0 +1,24 @@
+# environment variables — never commit this
+.env
+
+# python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# node / react (for later)
+node_modules/
+frontend/build/
+frontend/.env
+
+# aws sam
+.aws-sam/
+samconfig.toml
+
+# general
+.DS_Store
+*.log

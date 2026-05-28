@@ -1,0 +1,227 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: top10.fm — personal music chart tracker
+
+# ── global defaults applied to all Lambda functions ───────────────────────────
+Globals:
+  Function:
+    Runtime: python3.11
+    Timeout: 900         # 15 minutes — backfill needs this for large histories
+    MemorySize: 256
+    Environment:
+      Variables:
+        LASTFM_API_KEY: !Ref LastfmApiKey
+        AWS_REGION:     !Ref AWS::Region
+        USERS_TABLE:    !Ref UsersTable
+        CHARTS_TABLE:   !Ref ChartsTable
+        RECORDS_TABLE:  !Ref RecordsTable
+  Api:
+    Cors:
+      AllowMethods: "'GET,POST,OPTIONS'"
+      AllowHeaders: "'Content-Type'"
+      AllowOrigin:  "'*'"
+
+# ── parameters ─────────────────────────────────────────────────────────────────
+Parameters:
+  LastfmApiKey:
+    Type: String
+    Description: Last.fm API key
+    NoEcho: true
+
+# ── functions ──────────────────────────────────────────────────────────────────
+Resources:
+
+  # shared layer — all Lambda functions import from here
+  SharedLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: top10fm-shared
+      ContentUri: layers/shared/
+      CompatibleRuntimes:
+        - python3.11
+      RetentionPolicy: Delete
+
+  # validate a Last.fm username and check system status
+  ValidateUserFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: top10fm-validate-user
+      CodeUri: functions/validate_user/
+      Handler: handler.handler
+      Layers:
+        - !Ref SharedLayer
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            Path: /validate
+            Method: GET
+
+  # trigger backfill for a new user
+  BackfillFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: top10fm-backfill
+      CodeUri: functions/backfill/
+      Handler: handler.handler
+      Timeout: 900
+      MemorySize: 512   # extra memory for large scrobble histories
+      Layers:
+        - !Ref SharedLayer
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            Path: /backfill
+            Method: POST
+
+  # fetch a chart for a specific week
+  GetChartFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: top10fm-get-chart
+      CodeUri: functions/get_chart/
+      Handler: handler.handler
+      Layers:
+        - !Ref SharedLayer
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            Path: /chart
+            Method: GET
+
+  # scheduled weekly update for all users
+  WeeklyUpdateFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: top10fm-weekly-update
+      CodeUri: functions/weekly_update/
+      Handler: handler.handler
+      Timeout: 900
+      MemorySize: 512
+      Layers:
+        - !Ref SharedLayer
+      Events:
+        # runs every Monday at 6am UTC — after the week boundary
+        Schedule:
+          Type: Schedule
+          Properties:
+            Schedule: cron(0 6 ? * MON *)
+            Name: top10fm-weekly-update-schedule
+            Enabled: true
+        # also callable directly via API for lazy updates
+        Api:
+          Type: Api
+          Properties:
+            Path: /update
+            Method: POST
+
+# ── dynamodb tables ────────────────────────────────────────────────────────────
+
+  UsersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: top10fm-users
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: username
+          AttributeType: S
+      KeySchema:
+        - AttributeName: username
+          KeyType: HASH
+
+  ChartsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: top10fm-charts
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: username
+          AttributeType: S
+        - AttributeName: week_start
+          AttributeType: S
+        - AttributeName: song_key
+          AttributeType: S
+        - AttributeName: artist_key
+          AttributeType: S
+      KeySchema:
+        - AttributeName: username
+          KeyType: HASH
+        - AttributeName: week_start
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: song-index
+          KeySchema:
+            - AttributeName: song_key
+              KeyType: HASH
+            - AttributeName: week_start
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: artist-index
+          KeySchema:
+            - AttributeName: artist_key
+              KeyType: HASH
+            - AttributeName: week_start
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+  RecordsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: top10fm-records
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: username
+          AttributeType: S
+        - AttributeName: record_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: username
+          KeyType: HASH
+        - AttributeName: record_id
+          KeyType: RANGE
+
+# ── IAM role permissions ───────────────────────────────────────────────────────
+
+  LambdaDynamoPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: top10fm-lambda-dynamo-policy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+              - dynamodb:DeleteItem
+              - dynamodb:Query
+              - dynamodb:Scan
+            Resource:
+              - !GetAtt UsersTable.Arn
+              - !GetAtt ChartsTable.Arn
+              - !GetAtt RecordsTable.Arn
+              - !Sub "${ChartsTable.Arn}/index/*"
+
+# ── stack outputs ──────────────────────────────────────────────────────────────
+
+Outputs:
+  ApiUrl:
+    Description: API Gateway endpoint URL
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod"
+  ValidateUrl:
+    Description: Validate user endpoint
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/validate"
+  BackfillUrl:
+    Description: Backfill endpoint
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/backfill"
+  GetChartUrl:
+    Description: Get chart endpoint
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/chart"
+  WeeklyUpdateUrl:
+    Description: Weekly update endpoint
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/update"

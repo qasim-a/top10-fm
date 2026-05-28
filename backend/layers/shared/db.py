@@ -1,0 +1,170 @@
+import boto3
+import os
+from boto3.dynamodb.conditions import Key
+from datetime import datetime
+
+# ── client setup ──────────────────────────────────────────────────────────────
+
+dynamodb = boto3.resource(
+    "dynamodb",
+    region_name=os.environ.get("AWS_REGION", "us-east-1")
+)
+
+users_table   = dynamodb.Table(os.environ.get("USERS_TABLE",   "top10fm-users"))
+charts_table  = dynamodb.Table(os.environ.get("CHARTS_TABLE",  "top10fm-charts"))
+records_table = dynamodb.Table(os.environ.get("RECORDS_TABLE", "top10fm-records"))
+
+
+# ── users ─────────────────────────────────────────────────────────────────────
+
+def get_user(username: str) -> dict | None:
+    response = users_table.get_item(Key={"username": username.lower()})
+    return response.get("Item")
+
+
+def put_user(username: str, backfill_status: str, earliest_week: str = None,
+             latest_week: str = None, total_weeks: int = 0) -> None:
+    users_table.put_item(Item={
+        "username":        username.lower(),
+        "backfill_status": backfill_status,
+        "earliest_week":   earliest_week or "",
+        "latest_week":     latest_week   or "",
+        "last_updated":    datetime.utcnow().isoformat(),
+        "total_weeks":     total_weeks,
+    })
+
+
+def update_user_after_week(username: str, latest_week: str,
+                           total_weeks: int) -> None:
+    users_table.update_item(
+        Key={"username": username.lower()},
+        UpdateExpression=(
+            "SET latest_week = :lw, total_weeks = :tw, last_updated = :lu"
+        ),
+        ExpressionAttributeValues={
+            ":lw": latest_week,
+            ":tw": total_weeks,
+            ":lu": datetime.utcnow().isoformat(),
+        },
+    )
+
+
+def set_backfill_status(username: str, status: str) -> None:
+    users_table.update_item(
+        Key={"username": username.lower()},
+        UpdateExpression="SET backfill_status = :s, last_updated = :lu",
+        ExpressionAttributeValues={
+            ":s":  status,
+            ":lu": datetime.utcnow().isoformat(),
+        },
+    )
+
+
+# ── charts ────────────────────────────────────────────────────────────────────
+
+def get_chart(username: str, week_start: str) -> dict | None:
+    response = charts_table.get_item(
+        Key={"username": username.lower(), "week_start": week_start}
+    )
+    return response.get("Item")
+
+
+def get_all_weeks(username: str) -> list[str]:
+    """Returns all week_start values for a user, sorted ascending."""
+    response = charts_table.query(
+        KeyConditionExpression=Key("username").eq(username.lower()),
+        ProjectionExpression="week_start",
+    )
+    weeks = [item["week_start"] for item in response.get("Items", [])]
+    return sorted(weeks)
+
+
+def get_latest_chart(username: str) -> dict | None:
+    response = charts_table.query(
+        KeyConditionExpression=Key("username").eq(username.lower()),
+        ScanIndexForward=False,  # descending — latest first
+        Limit=1,
+    )
+    items = response.get("Items", [])
+    return items[0] if items else None
+
+
+def put_chart(username: str, week_start: str, entries: list,
+              records_broken: list) -> None:
+    # write main chart row
+    charts_table.put_item(Item={
+        "username":       username.lower(),
+        "week_start":     week_start,
+        "entries":        entries,
+        "records_broken": records_broken,
+    })
+    # write GSI rows for song-index and artist-index
+    _write_gsi_rows(username.lower(), week_start, entries)
+
+
+def _write_gsi_rows(username: str, week_start: str, entries: list) -> None:
+    """Writes flattened rows that power song-index and artist-index GSIs."""
+    with charts_table.batch_writer() as batch:
+        for entry in entries:
+            song_key   = f"{username}#{entry['song']}#{entry['artist']}"
+            artist_key = f"{username}#{entry['artist']}"
+            batch.put_item(Item={
+                "username":    username,
+                "week_start":  week_start,
+                "song_key":    song_key,
+                "artist_key":  artist_key,
+                "rank":        entry["rank"],
+                "plays":       entry["plays"],
+                "peak":        entry["peak"],
+                "weeks_on_chart": entry["weeks_on_chart"],
+            })
+
+
+def get_song_history(username: str, song: str, artist: str) -> list:
+    response = charts_table.query(
+        IndexName="song-index",
+        KeyConditionExpression=Key("song_key").eq(
+            f"{username.lower()}#{song}#{artist}"
+        ),
+    )
+    return sorted(response.get("Items", []), key=lambda x: x["week_start"])
+
+
+def get_artist_history(username: str, artist: str) -> list:
+    response = charts_table.query(
+        IndexName="artist-index",
+        KeyConditionExpression=Key("artist_key").eq(
+            f"{username.lower()}#{artist}"
+        ),
+    )
+    return sorted(response.get("Items", []), key=lambda x: x["week_start"])
+
+
+# ── records ───────────────────────────────────────────────────────────────────
+
+def get_record(username: str, record_id: str) -> dict | None:
+    response = records_table.get_item(
+        Key={"username": username.lower(), "record_id": record_id}
+    )
+    return response.get("Item")
+
+
+def get_all_records(username: str) -> list:
+    response = records_table.query(
+        KeyConditionExpression=Key("username").eq(username.lower())
+    )
+    return response.get("Items", [])
+
+
+def put_record(username: str, record_id: str, record_name: str,
+               holder: str, artist: str | None,
+               value: int, history: list) -> None:
+    records_table.put_item(Item={
+        "username":       username.lower(),
+        "record_id":      record_id,
+        "record_name":    record_name,
+        "current_holder": holder,
+        "current_artist": artist or "",
+        "current_value":  value,
+        "history":        history,
+    })
