@@ -1,7 +1,20 @@
+from __future__ import annotations
 import boto3
 import os
+import json
+import decimal
 from boto3.dynamodb.conditions import Key
 from datetime import datetime
+
+
+# ── decimal encoder ───────────────────────────────────────────────────────────
+
+class DecimalEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, decimal.Decimal):
+            return int(obj) if obj % 1 == 0 else float(obj)
+        return super().default(obj)
+
 
 # ── client setup ──────────────────────────────────────────────────────────────
 
@@ -82,7 +95,7 @@ def get_all_weeks(username: str) -> list[str]:
 def get_latest_chart(username: str) -> dict | None:
     response = charts_table.query(
         KeyConditionExpression=Key("username").eq(username.lower()),
-        ScanIndexForward=False,  # descending — latest first
+        ScanIndexForward=False,
         Limit=1,
     )
     items = response.get("Items", [])
@@ -90,54 +103,32 @@ def get_latest_chart(username: str) -> dict | None:
 
 
 def put_chart(username: str, week_start: str, entries: list,
-              records_broken: list) -> None:
-    # write main chart row
-    charts_table.put_item(Item={
+              records_broken: list,
+              records_snapshot: dict | None = None) -> None:
+    item = {
         "username":       username.lower(),
         "week_start":     week_start,
         "entries":        entries,
         "records_broken": records_broken,
-    })
-    # write GSI rows for song-index and artist-index
-    _write_gsi_rows(username.lower(), week_start, entries)
+    }
+    if records_snapshot is not None:
+        item["records_snapshot"] = records_snapshot
+    charts_table.put_item(Item=item)
 
 
-def _write_gsi_rows(username: str, week_start: str, entries: list) -> None:
-    """Writes flattened rows that power song-index and artist-index GSIs."""
-    with charts_table.batch_writer() as batch:
-        for entry in entries:
-            song_key   = f"{username}#{entry['song']}#{entry['artist']}"
-            artist_key = f"{username}#{entry['artist']}"
-            batch.put_item(Item={
-                "username":    username,
-                "week_start":  week_start,
-                "song_key":    song_key,
-                "artist_key":  artist_key,
-                "rank":        entry["rank"],
-                "plays":       entry["plays"],
-                "peak":        entry["peak"],
-                "weeks_on_chart": entry["weeks_on_chart"],
-            })
-
-
-def get_song_history(username: str, song: str, artist: str) -> list:
-    response = charts_table.query(
-        IndexName="song-index",
-        KeyConditionExpression=Key("song_key").eq(
-            f"{username.lower()}#{song}#{artist}"
-        ),
+def get_records_snapshot(username: str, week_start: str) -> dict | None:
+    """
+    Returns the records snapshot stored on the chart row for a given week.
+    Returns None if no snapshot stored for that week.
+    """
+    response = charts_table.get_item(
+        Key={"username": username.lower(), "week_start": week_start},
+        ProjectionExpression="records_snapshot",
     )
-    return sorted(response.get("Items", []), key=lambda x: x["week_start"])
-
-
-def get_artist_history(username: str, artist: str) -> list:
-    response = charts_table.query(
-        IndexName="artist-index",
-        KeyConditionExpression=Key("artist_key").eq(
-            f"{username.lower()}#{artist}"
-        ),
-    )
-    return sorted(response.get("Items", []), key=lambda x: x["week_start"])
+    item = response.get("Item")
+    if not item:
+        return None
+    return item.get("records_snapshot")
 
 
 # ── records ───────────────────────────────────────────────────────────────────

@@ -1,3 +1,4 @@
+from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from lastfm import get_scrobbles_for_week, aggregate_play_counts

@@ -59,11 +59,12 @@ def handler(event, context):
 
 
 def _response(status_code: int, body: dict) -> dict:
+    from db import DecimalEncoder
     return {
         "statusCode": status_code,
         "headers": {
             "Content-Type":                "application/json",
             "Access-Control-Allow-Origin": "*",
         },
-        "body": json.dumps(body),
+        "body": json.dumps(body, cls=DecimalEncoder),
     }

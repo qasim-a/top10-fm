@@ -2,12 +2,14 @@ const express = require("express");
 const cors    = require("cors");
 const fs      = require("fs");
 const path    = require("path");
+const { execSync } = require("child_process");
 
 const app  = express();
 app.use(cors());
 app.use(express.json());
 
-// load your real chart data
+// ── load chart data ───────────────────────────────────────────────────────────
+
 const charts = JSON.parse(
   fs.readFileSync(
     path.join(__dirname, "../backend/output_qasim-.json"),
@@ -15,22 +17,63 @@ const charts = JSON.parse(
   )
 );
 
-// build lookup by week_start
 const chartByWeek = {};
 charts.forEach(c => { chartByWeek[c.week_start] = c; });
-
-// sorted week list
 const allWeeks = charts.map(c => c.week_start).sort();
 
+// ── load records data (computed once at startup) ──────────────────────────────
 
-// ── helper: attach navigation to a chart ─────────────────────────────────────
+let recordsByWeek = {};
+
+function computeRecords() {
+  console.log("computing records...");
+  try {
+    const scriptPath = path.join(__dirname, "_compute_records.py");
+    const jsonPath   = path.join(__dirname, "../backend/output_qasim-.json");
+    const sharedPath = path.join(__dirname, "../backend/layers/shared");
+
+    const script = [
+      "import sys, json",
+      `sys.path.insert(0, '${sharedPath}')`,
+      "from records import build_all_records_incremental",
+      `with open('${jsonPath}') as f:`,
+      "    charts = json.load(f)",
+      "results = build_all_records_incremental(charts)",
+      "output  = {}",
+      "for week, snapshot, events in results:",
+      "    output[week] = {",
+      '        "records": {k: v for k, v in snapshot.items()},',
+      '        "events":  events,',
+      "    }",
+      "print(json.dumps(output))",
+    ].join("\n");
+
+    fs.writeFileSync(scriptPath, script);
+
+    const result = execSync(`python3 ${scriptPath}`, {
+      maxBuffer: 50 * 1024 * 1024,
+    });
+
+    recordsByWeek = JSON.parse(result.toString());
+    console.log(`records computed for ${Object.keys(recordsByWeek).length} weeks`);
+    fs.unlinkSync(scriptPath);
+  } catch (err) {
+    console.error("failed to compute records:", err.message);
+  }
+}
+
+computeRecords();
+
+
+// ── helpers ───────────────────────────────────────────────────────────────────
 
 function withNavigation(chart) {
-  const idx      = allWeeks.indexOf(chart.week_start);
+  const idx = allWeeks.indexOf(chart.week_start);
+  const weekData = recordsByWeek[chart.week_start] || {};
   return {
     ...chart,
-    entries:        chart.entries.slice(0, 20), // top 20 stored
-    records_broken: [],
+    entries:        chart.entries.slice(0, 20),
+    records_broken: weekData.events || [],
     navigation: {
       prev_week:     idx > 0 ? allWeeks[idx - 1] : null,
       next_week:     idx < allWeeks.length - 1 ? allWeeks[idx + 1] : null,
@@ -43,12 +86,10 @@ function withNavigation(chart) {
 
 // ── routes ────────────────────────────────────────────────────────────────────
 
-// validate user
 app.get("/validate", (req, res) => {
   const username = req.query.username?.toLowerCase();
   if (!username) return res.status(400).json({ error: "username required" });
 
-  // accept your own username
   if (username === "qasim-") {
     return res.json({
       username:      "qasim-",
@@ -70,20 +111,17 @@ app.get("/validate", (req, res) => {
   return res.status(404).json({ error: "Last.fm user not found" });
 });
 
-// get chart
 app.get("/chart", (req, res) => {
-  const username  = req.query.username?.toLowerCase();
-  const week      = req.query.week;
-  const weeksAll  = req.query.weeks;
+  const username = req.query.username?.toLowerCase();
+  const week     = req.query.week;
+  const weeksAll = req.query.weeks;
 
   if (!username) return res.status(400).json({ error: "username required" });
 
-  // return all weeks for calendar
   if (weeksAll === "true") {
     return res.json({ username, weeks: allWeeks });
   }
 
-  // specific week or latest
   const chart = week
     ? chartByWeek[week]
     : chartByWeek[allWeeks[allWeeks.length - 1]];
@@ -93,16 +131,26 @@ app.get("/chart", (req, res) => {
   return res.json(withNavigation(chart));
 });
 
-// backfill — instant for mock
-app.post("/backfill", (req, res) => {
-  res.json({
-    status:      "complete",
-    username:    "qasim-",
-    total_weeks: allWeeks.length,
+app.get("/records", (req, res) => {
+  const username = req.query.username?.toLowerCase();
+  const week     = req.query.week || allWeeks[allWeeks.length - 1];
+
+  if (!username) return res.status(400).json({ error: "username required" });
+
+  const weekData = recordsByWeek[week];
+  if (!weekData) return res.status(404).json({ error: "no records for this week" });
+
+  return res.json({
+    username,
+    week,
+    records: weekData.records,
   });
 });
 
-// update — no-op for mock
+app.post("/backfill", (req, res) => {
+  res.json({ status: "complete", username: "qasim-", total_weeks: allWeeks.length });
+});
+
 app.post("/update", (req, res) => {
   res.json({ status: "updated", username: "qasim-" });
 });
