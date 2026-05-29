@@ -6,7 +6,8 @@ import boto3
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../layers/shared"))
 
-from lastfm import validate_user
+from lastfm import validate_user, get_earliest_scrobble_timestamp
+from chart import get_all_week_starts
 from db import get_user, put_user
 
 
@@ -29,6 +30,16 @@ def handler(event, context):
         user_info = validate_user(username)
         if not user_info:
             return _response(404, {"error": "Last.fm user not found"})
+
+        # ── check history length ──────────────────────────────────────
+        earliest_ts = get_earliest_scrobble_timestamp(username)
+        if earliest_ts:
+            week_count = len(get_all_week_starts(earliest_ts))
+            if week_count > 500:
+                return _response(200, {
+                    "status":   "too_large",
+                    "username": username,
+                })
 
         # mark as in_progress immediately so polling knows job started
         put_user(username, backfill_status="in_progress")

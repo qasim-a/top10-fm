@@ -1,4 +1,5 @@
 from __future__ import annotations
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import os
 import sys
@@ -103,12 +104,30 @@ def handler(event, context):
 
 
 def _fetch_all_scrobbles(username: str, week_starts: list) -> list:
-    all_scrobbles = []
-    total         = len(week_starts)
-    for i, week_start in enumerate(week_starts):
+    total        = len(week_starts)
+    results      = {}
+    completed    = 0
+
+    def fetch_week(i: int, week_start):
         week_end  = get_week_end(week_start)
         scrobbles = get_scrobbles_for_week(username, week_start, week_end)
-        all_scrobbles.extend(scrobbles)
-        if (i + 1) % 20 == 0:
-            print(f"backfill_worker: fetched week {i+1}/{total}")
+        return i, scrobbles
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = {
+            executor.submit(fetch_week, i, ws): i
+            for i, ws in enumerate(week_starts)
+        }
+        for future in as_completed(futures):
+            i, scrobbles   = future.result()
+            results[i]     = scrobbles
+            completed     += 1
+            if completed % 20 == 0:
+                print(f"backfill_worker: fetched week {completed}/{total}")
+
+    # reassemble in chronological order
+    all_scrobbles = []
+    for i in range(total):
+        all_scrobbles.extend(results.get(i, []))
+
     return all_scrobbles

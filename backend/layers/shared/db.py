@@ -84,11 +84,24 @@ def get_chart(username: str, week_start: str) -> dict | None:
 
 def get_all_weeks(username: str) -> list[str]:
     """Returns all week_start values for a user, sorted ascending."""
-    response = charts_table.query(
-        KeyConditionExpression=Key("username").eq(username.lower()),
-        ProjectionExpression="week_start",
-    )
-    weeks = [item["week_start"] for item in response.get("Items", [])]
+    weeks = []
+    last_evaluated_key = None
+
+    while True:
+        kwargs = {
+            "KeyConditionExpression": Key("username").eq(username.lower()),
+            "ProjectionExpression":   "week_start",
+        }
+        if last_evaluated_key:
+            kwargs["ExclusiveStartKey"] = last_evaluated_key
+
+        response = charts_table.query(**kwargs)
+        weeks.extend(item["week_start"] for item in response.get("Items", []))
+
+        last_evaluated_key = response.get("LastEvaluatedKey")
+        if not last_evaluated_key:
+            break
+
     return sorted(weeks)
 
 
