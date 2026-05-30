@@ -22,3 +22,4 @@ samconfig.toml
 # general
 .DS_Store
 *.logbackend/output_*.json
+aws-sam-cli.pkg
