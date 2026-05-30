@@ -54,42 +54,16 @@ def handler(event, context):
                     "records":  records,
                 })
 
-# ── past week — recompute incrementally ───────────────────────────────
-        from db import get_all_weeks, get_chart
-        from records import build_all_records_incremental
+        # ── past week — read snapshot stored on chart row ─────────────────────
+        snapshot = get_records_snapshot(username, week)
+        if snapshot:
+            return _response(200, {
+                "username": username,
+                "week":     week,
+                "records":  snapshot,
+            })
 
-        all_week_strs = get_all_weeks(username)
-        charts        = []
-        for ws in all_week_strs:
-            if ws > week:
-                break
-            c = get_chart(username, ws)
-            if c:
-                charts.append(c)
-
-        if not charts:
-            return _response(404, {"error": "no charts found up to this week"})
-
-        records_by_week = build_all_records_incremental(charts)
-        records_state   = {}
-        for w, snapshot, _ in records_by_week:
-            if w == week:
-                records_state = snapshot
-                break
-
-        if not records_state and records_by_week:
-            _, records_state, _ = records_by_week[-1]
-
-        return _response(200, {
-            "username": username,
-            "week":     week,
-            "records":  records_state,
-        })
-
-        # ── fallback: snapshot not found (pre-migration data) ─────────────────
-        return _response(404, {
-            "error": "no records snapshot found for this week"
-        })
+        return _response(404, {"error": "no records snapshot found for this week"})
 
     except Exception as e:
         print(f"get_records error: {e}")

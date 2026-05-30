@@ -43,7 +43,8 @@ def handler(event, context):
 
         # ── compute records incrementally ─────────────────────────────────────
         records_by_week = build_all_records_incremental(charts)
-        events_by_week  = {week: events for week, _, events in records_by_week}
+        snapshots_by_week = {week: snapshot for week, snapshot, _ in records_by_week}
+        events_by_week    = {week: events   for week, _, events   in records_by_week}
         print(f"backfill_worker: computed records for {len(records_by_week)} weeks")
 
         # ── write charts in batches of 25 ─────────────────────────────────────
@@ -56,13 +57,15 @@ def handler(event, context):
             batch = charts[i:i + batch_size]
             with charts_table.batch_writer() as writer:
                 for chart in batch:
-                    week   = chart["week_start"]
-                    events = events_by_week.get(week, [])
+                    week     = chart["week_start"]
+                    events   = events_by_week.get(week, [])
+                    snapshot = snapshots_by_week.get(week, {})
                     writer.put_item(Item={
-                        "username":       username.lower(),
-                        "week_start":     week,
-                        "entries":        chart["entries"],
-                        "records_broken": events,
+                        "username":         username.lower(),
+                        "week_start":       week,
+                        "entries":          chart["entries"],
+                        "records_broken":   events,
+                        "records_snapshot": snapshot,
                     })
             print(f"backfill_worker: wrote {min(i+batch_size, len(charts))}/{len(charts)} charts")
 
