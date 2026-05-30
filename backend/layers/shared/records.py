@@ -603,19 +603,27 @@ def snapshot_records(state: dict, week: str) -> dict[str, list[dict]]:
              "first_1_after": gap_data["after"]}))
     results[S4] = top3_with_ties(cands)
 
-    # ── S5: longest climb to #1 ───────────────────────────────────────────────
+    # ── S5: longest climb to #1 (debut to first #1) ───────────────────────────
     cands = []
-    for tk, climb in state["song_climb"].items():
-        if climb.get("climbing") or not climb.get("reached_week"):
+    for tk, ones in state["song_number_one_weeks"].items():
+        if not ones:
             continue
-        if climb["start_pos"] <= 1:
+        first_1_week  = ones[0]
+        first_seen    = state["song_first_seen"].get(tk)
+        if not first_seen:
+            continue
+        debut_week    = first_seen["week"]
+        first_idx     = state["all_weeks"].index(debut_week)  if debut_week  in state["all_weeks"] else 0
+        one_idx       = state["all_weeks"].index(first_1_week) if first_1_week in state["all_weeks"] else 0
+        gap           = one_idx - first_idx
+        if gap <= 0:
             continue
         d = state["tk_display"][tk]
-        cands.append(make_record(S5, d["song"], d["artist"], climb["length"], climb["start_week"],
-            {"weeks_climbing":  climb["length"],
-             "debut_week":      climb["start_week"],
-             "debut_position":  climb["start_pos"],
-             "reached_1_week":  climb["reached_week"]}))
+        cands.append(make_record(S5, d["song"], d["artist"], gap, first_1_week,
+            {"gap_weeks":   gap,
+            "debut_week":  debut_week,
+            "debut_rank":  first_seen["rank"],
+            "first_1_week": first_1_week}))
     results[S5] = top3_with_ties(cands)
 
     # ── S6: most total weeks in top 10 ───────────────────────────────────────
