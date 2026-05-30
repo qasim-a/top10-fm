@@ -4,7 +4,7 @@ Weekly personal music charts built from your Last.fm scrobble history. Every Mon
 
 **[Live Demo →](https://top10-fm.vercel.app)**
 
-![Chart View](assets/chart.png)
+<img src="assets/chart.png" width="25%" />
 
 ---
 
@@ -30,7 +30,7 @@ A new user enters their Last.fm username. The backend fetches their complete scr
 - Chart export as image — download on desktop, hold-to-save modal on mobile
 - Past Records view showing records as they stood at any historical week
 
-![Records View](assets/records.png)
+<img src="assets/records.png" width="25%" />
 
 ---
 
